@@ -53,11 +53,18 @@ const boasVindas = document.querySelector('#boas-vindas');
 const loginErro = document.querySelector('#login-erro');
 const formCadastro = document.querySelector('#form-cadastro');
 const cadastroErro = document.querySelector('#cadastro-erro');
+const botaoCadastrar = document.querySelector('#btn-cadastrar');
+
+const API_CLIENTES = 'https://senac-bank-api.dennislopes.com.br/api/clientes';
+const TEMPO_LIMITE_API_MS = 15000;
 
 // Função auxiliar para exibir mensagens de erro amigáveis no formulário de cadastro
 function mostrarErroCadastro(mensagem, seletorInput) {
     cadastroErro.textContent = mensagem;
     cadastroErro.style.display = 'block';
+
+    // Garante que erros de servidor ou de campos fora da área visível sejam percebidos.
+    cadastroErro.scrollIntoView({ behavior: 'smooth', block: 'center' });
     
     const inputFoco = document.querySelector(seletorInput);
     if (inputFoco) {
@@ -69,6 +76,64 @@ function mostrarErroCadastro(mensagem, seletorInput) {
             inputFoco.style.borderColor = '#ddd';
             cadastroErro.style.display = 'none';
         }, { once: true });
+    }
+}
+
+// A API pode responder com JSON, texto puro ou corpo vazio. Esta função aceita os três formatos.
+async function lerRespostaDaAPI(resposta) {
+    const texto = await resposta.text();
+    if (!texto) return null;
+
+    try {
+        return JSON.parse(texto);
+    } catch {
+        return texto;
+    }
+}
+
+function extrairMensagemDaAPI(resultado, status) {
+    if (typeof resultado === 'string' && resultado.trim()) return resultado.trim();
+
+    if (resultado && typeof resultado === 'object') {
+        return resultado.message || resultado.mensagem || resultado.erro || resultado.error
+            || `A API recusou o cadastro (HTTP ${status}).`;
+    }
+
+    return `A API recusou o cadastro (HTTP ${status}).`;
+}
+
+// Envia o cadastro com limite de espera para a interface nunca ficar travada indefinidamente.
+async function cadastrarClienteNaAPI(dados) {
+    const controlador = new AbortController();
+    const temporizador = setTimeout(() => controlador.abort(), TEMPO_LIMITE_API_MS);
+
+    try {
+        const resposta = await fetch(API_CLIENTES, {
+            method: 'POST',
+            headers: { 'accept': '*/*', 'Content-Type': 'application/json' },
+            body: JSON.stringify(dados),
+            signal: controlador.signal
+        });
+
+        const resultado = await lerRespostaDaAPI(resposta);
+
+        if (!resposta.ok) {
+            throw new Error(extrairMensagemDaAPI(resultado, resposta.status));
+        }
+
+        return resultado;
+    } catch (erro) {
+        if (erro.name === 'AbortError') {
+            throw new Error('O servidor demorou mais de 15 segundos para responder. Tente novamente em alguns minutos.');
+        }
+
+        if (erro instanceof TypeError) {
+            throw new Error('Não foi possível conectar à API do Banco Senac. Verifique a conexão ou tente novamente mais tarde.');
+        }
+
+        throw erro;
+    } finally {
+        clearTimeout(temporizador);
     }
 }
 
@@ -209,7 +274,7 @@ formCadastro.addEventListener('submit', async (e) => {
     const cep = document.querySelector('#cad-cep').value.trim();
     const endereco = document.querySelector('#cad-endereco').value.trim();
     const cidade = document.querySelector('#cad-cidade').value.trim();
-    const estado = document.querySelector('#cad-estado').value.trim();
+    const estado = document.querySelector('#cad-estado').value.trim().toUpperCase();
     const senha = document.querySelector('#cad-senha').value;
     const confirmaSenha = document.querySelector('#cad-confirma-senha').value;
 
@@ -269,17 +334,11 @@ formCadastro.addEventListener('submit', async (e) => {
     const novoCliente = { nome, cpf, email, celular, cep, endereco, cidade, estado, senha };
 
     try {
-        const resposta = await fetch('https://senac-bank-api.dennislopes.com.br/api/clientes', {
-            method: 'POST',
-            headers: { 'accept': '*/*', 'Content-Type': 'application/json' },
-            body: JSON.stringify(novoCliente)
-        });
+        botaoCadastrar.disabled = true;
+        botaoCadastrar.textContent = 'Enviando...';
+        botaoCadastrar.setAttribute('aria-busy', 'true');
 
-        if (!resposta.ok) {
-            throw new Error(`Erro ao registar cliente: Status ${resposta.status}`);
-        }
-
-        const dadosResposta = await resposta.json();
+        const dadosResposta = await cadastrarClienteNaAPI(novoCliente);
         console.log("Registo efetuado com sucesso na API:", dadosResposta);
 
         // Limpa o rascunho do LocalStorage e reseta o formulário após o sucesso
@@ -292,7 +351,11 @@ formCadastro.addEventListener('submit', async (e) => {
 
     } catch (erro) {
         console.error("Erro na requisição POST:", erro.message);
-        mostrarErroCadastro("Ocorreu um erro ao comunicar com o servidor. Tente novamente mais tarde.", '#cad-nome');
+        mostrarErroCadastro(erro.message);
+    } finally {
+        botaoCadastrar.disabled = false;
+        botaoCadastrar.textContent = 'Concluir Registo';
+        botaoCadastrar.removeAttribute('aria-busy');
     }
 });
 
